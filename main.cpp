@@ -57,6 +57,7 @@ auto grad_hash1() -> at::Tensor
 }
 
 std::array funcs = { grad_hash0, grad_hash1 };
+std::array funcs_name = { "grad_hash0", "grad_hash1" };
 
 auto init_parameters() -> void
 {
@@ -97,14 +98,15 @@ auto repeat(grad_hash_func grad_hash_new) -> double
             return -1;
         }
     }
-    return std::chrono::duration<double>(end - start).count() / repeat_times;
+    return std::chrono::duration<double>(end - start).count() * 1000 / repeat_times;
 }
 
 auto benchmark() -> void
 {
-    for (auto func : funcs) {
-        auto time = repeat<5>(func);
-        std::cout << "time: " << time << " seconds\n";
+    for (int i = 0; i < funcs.size(); i++) {
+        std::cout << "Benchmarking " << funcs_name[i] << "...\n";
+        auto time = repeat<5>(funcs[i]);
+        std::cout << "Time: " << time << " ms\n";
     }
 }
 
