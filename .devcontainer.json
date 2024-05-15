@@ -1,0 +1,17 @@
+{
+  "name": "pytorch container",
+  "image": "nvcr.io/nvidia/pytorch:24.04-py3",
+  "remoteUser": "vscode",
+  "customizations": {
+    "vscode": {
+      "settings": {},
+      "extensions": []
+    }
+  },
+  "features": {
+    "ghcr.io/devcontainers/features/common-utils:2": {
+      "configureZshAsDefaultShell": true
+    }
+  },
+  "runArgs": ["--gpus", "all"]
+}
