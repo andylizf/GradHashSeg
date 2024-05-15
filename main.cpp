@@ -141,9 +141,28 @@ auto grad_hash4() -> at::Tensor
 
 at::Tensor grad_hash_cuda();
 at::Tensor grad_hash_cuda2();
+at::Tensor grad_hash_cuda3();
 
-std::array funcs = { grad_hash0, grad_hash1, grad_hash2, grad_hash3, grad_hash4, grad_hash_cuda, grad_hash_cuda2 };
-std::array funcs_name = { "grad_hash0", "grad_hash1", "grad_hash2", "grad_hash3", "grad_hash4", "grad_hash_cuda", "grad_hash_cuda2" };
+std::array funcs = {
+    grad_hash0,
+    grad_hash1,
+    grad_hash2,
+    grad_hash3,
+    grad_hash4,
+    grad_hash_cuda,
+    grad_hash_cuda2,
+    grad_hash_cuda3
+};
+std::array funcs_name = {
+    "grad_hash0",
+    "grad_hash1",
+    "grad_hash2",
+    "grad_hash3",
+    "grad_hash4",
+    "grad_hash_cuda",
+    "grad_hash_cuda2",
+    "grad_hash_cuda3"
+};
 
 auto init_parameters() -> void
 {
