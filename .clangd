@@ -1,0 +1,10 @@
+CompileFlags:
+  Remove:
+    - -forward-unknown-to-host-compiler
+    - -gencode
+    - -Xcudafe
+    - --expt-extended-lambda
+    - --generate-dependencies-with-compile
+    - --expt-relaxed-constexpr
+    - --compiler-options
+    - --diag_suppress*
