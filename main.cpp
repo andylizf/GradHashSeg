@@ -1,15 +1,12 @@
 #include <ATen/core/TensorBody.h>
 #include <c10/cuda/CUDACachingAllocator.h>
+#include <c10/cuda/CUDAStream.h>
 #include <chrono>
 #include <iostream>
+#include <torch/csrc/autograd/profiler_kineto.h>
+#include <torch/cuda.h>
 #include <torch/torch.h>
 #include <torch/types.h>
-
-// 定义宏用于计时
-#define TIMER_LAP(str, start)                                                                                                             \
-    torch::cuda::synchronize();                                                                                                           \
-    std::cout << str << ": " << std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - start).count() << " seconds\n"; \
-    start = std::chrono::high_resolution_clock::now();
 
 int max_buckets = 170;
 int num_rows = 1000;
@@ -20,11 +17,32 @@ at::Tensor vector_ids, buckets_index_inv, buckets_count, gradIndex;
 
 using grad_hash_func = at::Tensor (*)();
 
+void some_function(bool useCuda)
+{
+    using namespace torch::autograd::profiler;
+    ProfilerConfig cfg {
+        ProfilerState::KINETO,
+        false,
+        false,
+        false,
+        false,
+        false
+    };
+    std::set<torch::autograd::profiler::ActivityType> activities { torch::autograd::profiler::ActivityType::CPU };
+    if (useCuda) {
+        activities.insert(torch::autograd::profiler::ActivityType::CUDA);
+    }
+    prepareProfiler(cfg, activities);
+    enableProfiler(cfg, activities);
+    // Your code here
+    auto result = disableProfiler();
+    result->save("./some_local_file.json");
+}
+
 auto grad_hash0() -> at::Tensor
 {
     at::Tensor grad_Hash_value = (vector_ids.unsqueeze(2).repeat({ 1, 1, max_buckets }) + 1).to(gradIndex.options()) / (buckets_index_inv.unsqueeze(1).repeat({ 1, num_rows, 1 }) + 1).to(gradIndex.options()) - 1;
     grad_Hash_value = -1 * grad_Hash_value / (sigma * sigma) * exp(-1 * grad_Hash_value * grad_Hash_value / (2 * sigma * sigma)) * gradIndex / buckets_count.unsqueeze(1).repeat({ 1, num_rows, 1 }).to(gradIndex.options());
-    at::Tensor power = at::zeros({ n_matrices, max_buckets, param_H }, gradIndex.options());
     at::Tensor zero = at::zeros({ n_matrices, num_rows, max_buckets }, gradIndex.options());
     grad_Hash_value = at::where(grad_Hash_value.isnan(), zero, grad_Hash_value);
     return grad_Hash_value;
@@ -40,12 +58,14 @@ auto grad_hash1() -> at::Tensor
 
     // 计算 exp_component，避免重复计算
     auto grad_Hash_value_sq = grad_Hash_value * grad_Hash_value;
-    auto sigma_sq = sigma * sigma;
-    auto exp_component = torch::exp(-grad_Hash_value_sq / (2 * sigma_sq));
+    auto neg_sigma_sq = -sigma * sigma;
+    grad_Hash_value_sq.div_(2 * neg_sigma_sq).exp_();
 
     // 计算 grad_Hash_value
     auto buckets_count_expanded = buckets_count.unsqueeze(1).expand({ -1, num_rows, -1 });
-    grad_Hash_value = -grad_Hash_value / sigma_sq * exp_component * gradIndex / buckets_count_expanded;
+    grad_Hash_value.div_(neg_sigma_sq).mul_(gradIndex);
+    grad_Hash_value_sq.div_(buckets_count_expanded);
+    grad_Hash_value.mul_(grad_Hash_value_sq);
 
     // 创建 zero 张量
     auto zero = torch::zeros({ n_matrices, num_rows, max_buckets }, gradIndex.options());
@@ -56,8 +76,71 @@ auto grad_hash1() -> at::Tensor
     return grad_Hash_value;
 }
 
-std::array funcs = { grad_hash0, grad_hash1 };
-std::array funcs_name = { "grad_hash0", "grad_hash1" };
+auto grad_hash2() -> at::Tensor
+{
+    auto vector_ids_expanded = (vector_ids + 1).unsqueeze(2).expand({ -1, -1, max_buckets }).to(gradIndex.options());
+    auto buckets_index_inv_expanded = (buckets_index_inv + 1).unsqueeze(1).expand({ -1, num_rows, -1 });
+
+    // 计算 grad_Hash_value
+    auto grad_Hash_value = vector_ids_expanded.div_(buckets_index_inv_expanded).sub_(1);
+
+    // 计算 exp_component，避免重复计算
+    auto grad_Hash_value_sq = grad_Hash_value.square();
+    auto neg_sigma_sq = -sigma * sigma;
+    grad_Hash_value_sq.div_(2 * neg_sigma_sq).exp_();
+
+    // 计算 grad_Hash_value
+    grad_Hash_value.div_(neg_sigma_sq).mul_(gradIndex);
+    grad_Hash_value_sq.div_(buckets_count.unsqueeze(1).expand({ -1, num_rows, -1 }));
+    grad_Hash_value.mul_(grad_Hash_value_sq);
+
+    // 创建 zero 张量
+    auto zero = torch::zeros({ n_matrices, num_rows, max_buckets }, gradIndex.options());
+
+    // 使用 where 操作处理 NaN 值
+    grad_Hash_value = torch::where(grad_Hash_value.isnan(), zero, grad_Hash_value);
+
+    return grad_Hash_value;
+}
+
+auto grad_hash3() -> at::Tensor
+{
+    at::Tensor grad_Hash_value = (vector_ids + 1).unsqueeze(2).expand({ -1, -1, max_buckets }) / (buckets_index_inv + 1).unsqueeze(1).expand({ -1, num_rows, -1 }) - 1;
+    grad_Hash_value = -grad_Hash_value / (sigma * sigma) * exp(-grad_Hash_value * grad_Hash_value / (2 * sigma * sigma)) * gradIndex / buckets_count.unsqueeze(1).expand({ -1, num_rows, -1 }).to(gradIndex.options());
+    at::Tensor zero = at::zeros({ n_matrices, num_rows, max_buckets }, gradIndex.options());
+    grad_Hash_value = at::where(grad_Hash_value.isnan(), zero, grad_Hash_value);
+    return grad_Hash_value;
+}
+
+auto grad_hash4() -> at::Tensor
+{
+    auto vector_ids_expanded = (vector_ids + 1).unsqueeze(2).expand({ -1, -1, max_buckets }).to(gradIndex.options());
+    auto buckets_index_inv_expanded = (buckets_index_inv + 1).unsqueeze(1).expand({ -1, num_rows, -1 });
+
+    // 计算 grad_Hash_value
+    auto grad_Hash_value = vector_ids_expanded.div_(buckets_index_inv_expanded).sub_(1);
+
+    // 计算 exp_component，避免重复计算
+    auto grad_Hash_value_sq = grad_Hash_value.square();
+    auto sigma_sq = sigma * sigma;
+    grad_Hash_value_sq.div_(2 * sigma_sq).neg_().exp_();
+
+    // 计算 grad_Hash_value
+    grad_Hash_value.div_(sigma_sq).mul_(gradIndex);
+    grad_Hash_value_sq.div_(buckets_count.unsqueeze(1).expand({ -1, num_rows, -1 }));
+    grad_Hash_value.mul_(grad_Hash_value_sq).neg_();
+
+    // 创建 zero 张量
+    auto zero = torch::zeros({ n_matrices, num_rows, max_buckets }, gradIndex.options());
+
+    // 使用 where 操作处理 NaN 值
+    grad_Hash_value = torch::where(grad_Hash_value.isnan(), zero, grad_Hash_value);
+
+    return grad_Hash_value;
+}
+
+std::array funcs = { grad_hash0, grad_hash1, grad_hash2, grad_hash3, grad_hash4 };
+std::array funcs_name = { "grad_hash0", "grad_hash1", "grad_hash2", "grad_hash3", "grad_hash4" };
 
 auto init_parameters() -> void
 {
@@ -81,23 +164,20 @@ auto repeat(grad_hash_func grad_hash_new) -> double
     c10::cuda::CUDACachingAllocator::emptyCache();
     init_parameters();
     auto std_result = grad_hash0();
-    std::array<at::Tensor, repeat_times> new_results;
+    auto new_result = grad_hash_new();
+    if (!check_correctness(std_result, new_result)) {
+        std::cerr << "Error: the results are not the same\n";
+        return -1;
+    }
 
     auto start = std::chrono::high_resolution_clock::now();
 #pragma unroll
     for (int i = 0; i < repeat_times; i++) {
-        new_results[i] = grad_hash_new();
+        grad_hash_new();
+        torch::cuda::synchronize();
+        cudaDeviceSynchronize();
     }
     auto end = std::chrono::high_resolution_clock::now();
-
-    for (int i = 0; i < repeat_times; i++) {
-        if (!check_correctness(std_result, new_results[i])) {
-            std::cerr << "Error: the results are not the same\n";
-            std::cerr << "std_result: " << std_result << "\n";
-            std::cerr << "new_result: " << new_results[i] << "\n";
-            return -1;
-        }
-    }
     return std::chrono::duration<double>(end - start).count() * 1000 / repeat_times;
 }
 
