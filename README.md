@@ -3,9 +3,12 @@
 ## Introduction
 
 To calculate the following formula more efficiently:
+
 $$
-\text{grad\_Hash\_value} = \left( \frac{(\text{vector\_ids} + 1)}{(\text{buckets\_index\_inv} + 1)} \right) - 1
-\text{grad\_Hash\_value} = - \frac{\text{grad\_Hash\_value}}{\sigma^2} \cdot \exp\left(- \frac{\text{grad\_Hash\_value}^2}{2\sigma^2}\right) \cdot \frac{\text{gradIndex}}{\text{buckets\_count}}
+\begin{align}
+\text{gradHashValue} &= \left( \frac{\text{vectorIds} + 1}{\text{bucketsIndexInv} + 1} \right) - 1 \\
+\text{gradHashValue} &= - \frac{\text{gradHashValue}}{\sigma^2} \cdot \exp\left(- \frac{\text{gradHashValue}^2}{2\sigma^2}\right) \cdot \frac{\text{gradIndex}}{\text{bucketsCount}}
+\end{align}
 $$
 
 ## Build
